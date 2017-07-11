@@ -315,9 +315,9 @@ static struct cpufreq_driver msm_cpufreq_driver = {
 	.attr		= msm_freq_attr,
 };
 
-#ifdef CONFIG_MACH_MSM8996_15801
-#define UNDERCLOCKED_MAX_KHZ_PERFCL	1920000
-#define UNDERCLOCKED_MAX_KHZ_PWRCL	1478400
+#ifdef CONFIG_PRODUCT_Z2_PLUS
+#define UNDERCLK_MAX_PERFCL_MSM8996	1824000
+#define UNDERCLK_MAX_PWRCL_MSM8996	1478400
 static bool no_cpu_underclock;
 
 static int __init get_cpu_underclock(char *unused)
@@ -335,6 +335,13 @@ static struct cpufreq_frequency_table *cpufreq_parse_dt(struct device *dev,
 	int ret, nf, i;
 	u32 *data;
 	struct cpufreq_frequency_table *ftbl;
+
+#ifdef CONFIG_PRODUCT_Z2_PLUS
+	int underclk_max_perfcl, underclk_max_pwrcl;
+
+		underclk_max_perfcl = UNDERCLK_MAX_PERFCL_MSM8996;
+		underclk_max_pwrcl = UNDERCLK_MAX_PWRCL_MSM8996;
+// #endif
 
 	/* Parse list of usable CPU frequencies. */
 	if (!of_find_property(dev->of_node, tbl_name, &nf))
@@ -364,15 +371,16 @@ static struct cpufreq_frequency_table *cpufreq_parse_dt(struct device *dev,
 			break;
 		f /= 1000;
 
-#ifdef CONFIG_MACH_MSM8996_15801
-		if (!no_cpu_underclock && i > 0) {
+#ifdef CONFIG_PRODUCT_Z2_PLUS
+		if (i > 0) {
+			/* Always underclock power cluster for stability */
 			if (cpu < 2) {
 				if (ftbl[i - 1].frequency ==
-						UNDERCLOCKED_MAX_KHZ_PWRCL)
+						underclk_max_pwrcl)
 					break;
-			} else {
+			} else if (!no_cpu_underclock) {
 				if (ftbl[i - 1].frequency ==
-						UNDERCLOCKED_MAX_KHZ_PERFCL)
+						underclk_max_perfcl)
 					break;
 			}
 		}
