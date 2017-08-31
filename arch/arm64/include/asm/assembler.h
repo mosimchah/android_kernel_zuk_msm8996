@@ -116,11 +116,6 @@
 	.previous
 
 /*
- * Register aliases.
- */
-lr	.req	x30		// link register
-
-/*
  * Vector entry
  */
 	 .macro	ventry	label
