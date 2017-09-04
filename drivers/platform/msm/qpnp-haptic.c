@@ -1336,7 +1336,8 @@ static ssize_t qpnp_hap_ramp_test_data_show(struct device *dev,
 
 }
 
-static ssize_t qpnp_hap_vmax_mv_show(struct device *dev,
+/* sysfs show for vmax_mv_strong update */
+static ssize_t qpnp_hap_vmax_mv_strong_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
@@ -1346,67 +1347,31 @@ static ssize_t qpnp_hap_vmax_mv_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%d\n", hap->vmax_mv);
 }
 
-static ssize_t qpnp_hap_vmax_mv_store(struct device *dev,
+/* sysfs store for vmax_mv_strong */
+static ssize_t qpnp_hap_vmax_mv_strong_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
 	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
 					 timed_dev);
-	u32 data;
-	int rc;
+	u32 val;
+	ssize_t ret;
 
-	if (sscanf(buf, "%d", &data) != 1)
+	ret = kstrtou32(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if ((val < QPNP_HAP_VMAX_MIN_MV) || (val > QPNP_HAP_VMAX_MAX_MV))
 		return -EINVAL;
 
-	if (data < hap->vtg_min) {
-		pr_err("%s: mv %d not in range (%d - %d), using min.", __func__, data,
-				hap->vtg_min, hap->vtg_max);
-		data = hap->vtg_min;
-	} else if (data > hap->vtg_max) {
-		pr_err("%s: mv %d not in range (%d - %d), using max.", __func__, data,
-				hap->vtg_min, hap->vtg_max);
-		data = hap->vtg_max;
-	}
+	mutex_lock(&hap->wf_lock);
+	hap->vmax_mv = val;
+	ret = qpnp_hap_vmax_config(hap);
+	if (ret)
+		pr_err("%s: error setting vmax_mv\n", __func__);
+	mutex_unlock(&hap->wf_lock);
 
-	hap->vmax_mv = data;
-	rc = qpnp_hap_vmax_config(hap);
-	if (rc)
-		pr_info("qpnp: error while writing vibration control register\n");
-
-	return strnlen(buf, count);
-}
-
-static ssize_t qpnp_hap_min_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
-	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
-					 timed_dev);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_min);
-}
-
-static ssize_t qpnp_hap_max_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
-	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
-					 timed_dev);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_max);
-}
-
-static ssize_t qpnp_hap_default_show(struct device *dev,
-					struct device_attribute *attr,
-					char *buf)
-{
-	struct timed_output_dev *timed_dev = dev_get_drvdata(dev);
-	struct qpnp_hap *hap = container_of(timed_dev, struct qpnp_hap,
-					 timed_dev);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", hap->vtg_default);
+	return count;
 }
 
 /* sysfs attributes */
@@ -1456,18 +1421,9 @@ static struct device_attribute qpnp_hap_attrs[] = {
 	__ATTR(min_max_test, (S_IRUGO | S_IWUSR | S_IWGRP),
 			qpnp_hap_min_max_test_data_show,
 			qpnp_hap_min_max_test_data_store),
-	__ATTR(vtg_level, (S_IRUGO | S_IWUSR | S_IWGRP),
-			qpnp_hap_vmax_mv_show,
-			qpnp_hap_vmax_mv_store),
-	__ATTR(vtg_min, S_IRUGO,
-			qpnp_hap_min_show,
-			NULL),
-	__ATTR(vtg_max, S_IRUGO,
-			qpnp_hap_max_show,
-			NULL),
-	__ATTR(vtg_default, S_IRUGO,
-			qpnp_hap_default_show,
-			NULL),
+	__ATTR(vmax_mv_strong, (S_IRUGO | S_IWUSR | S_IWGRP),
+			qpnp_hap_vmax_mv_strong_show,
+			qpnp_hap_vmax_mv_strong_store),
 };
 #endif
 
@@ -1773,6 +1729,12 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 		}
 		hap->state = 0;
 	} else {
+
+		if (hap->vmax_mv == QPNP_HAP_VMAX_MIN_MV) {
+			mutex_unlock(&hap->lock);
+			return;
+		}
+
 		value = (value > hap->timeout_ms ?
 				 hap->timeout_ms : value);
 		hap->state = 1;
@@ -1786,6 +1748,11 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 		qpnp_hap_set(hap, hap->state);
 	else
 		schedule_work(&hap->work);
+}
+
+void set_vibrate(int value)
+{
+	qpnp_hap_td_enable(&ghap->timed_dev, value);
 }
 
 /* play pwm bytes */

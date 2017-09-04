@@ -2931,7 +2931,8 @@ static int __ref update_offline_cores(int val)
 
 	if (pend_hotplug_req && !in_suspend && !retry_in_progress) {
 		retry_in_progress = true;
-		schedule_delayed_work(&retry_hotplug_work,
+		queue_delayed_work(system_power_efficient_wq,
+			&retry_hotplug_work,
 			msecs_to_jiffies(HOTPLUG_RETRY_INTERVAL_MS));
 	}
 
@@ -3424,8 +3425,9 @@ static void check_temp(struct work_struct *work)
 
 reschedule:
 	if (polling_enabled)
-		schedule_delayed_work(&check_temp_work,
-				msecs_to_jiffies(msm_thermal_info.poll_ms));
+		queue_delayed_work(system_power_efficient_wq,
+			&check_temp_work,
+			msecs_to_jiffies(msm_thermal_info.poll_ms));
 }
 
 static int __ref msm_thermal_cpu_callback(struct notifier_block *nfb,
@@ -4728,126 +4730,6 @@ static struct kernel_param_ops module_ops = {
 module_param_cb(enabled, &module_ops, &enabled, 0644);
 MODULE_PARM_DESC(enabled, "enforce thermal limit on cpu");
 
-static ssize_t show_cc_enabled(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", core_control_enabled);
-}
-
-static ssize_t __ref store_cc_enabled(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	int ret = 0;
-	int val = 0;
-	uint32_t cpu = 0;
-
-	if (!mitigation) {
-		pr_err("Thermal Mitigations disabled.\n");
-		goto done_store_cc;
-	}
-
-	ret = kstrtoint(buf, 10, &val);
-	if (ret) {
-		pr_err("Invalid input %s. err:%d\n", buf, ret);
-		goto done_store_cc;
-	}
-
-	if (core_control_enabled == !!val)
-		goto done_store_cc;
-
-	core_control_enabled = !!val;
-	if (core_control_enabled) {
-		pr_info("Core control enabled\n");
-		cpus_previously_online_update();
-		register_cpu_notifier(&msm_thermal_cpu_notifier);
-		/*
-		 * Re-evaluate thermal core condition, update current status
-		 * and set threshold for all cpus.
-		 */
-		hotplug_init_cpu_offlined();
-		mutex_lock(&core_control_mutex);
-		update_offline_cores(cpus_offlined);
-		if (hotplug_enabled) {
-			for_each_possible_cpu(cpu) {
-				if (!(msm_thermal_info.core_control_mask &
-					BIT(cpus[cpu].cpu)))
-					continue;
-				sensor_mgr_set_threshold(cpus[cpu].sensor_id,
-				&cpus[cpu].threshold[HOTPLUG_THRESHOLD_HIGH]);
-			}
-		}
-		mutex_unlock(&core_control_mutex);
-	} else {
-		pr_info("Core control disabled\n");
-		unregister_cpu_notifier(&msm_thermal_cpu_notifier);
-	}
-
-done_store_cc:
-	return count;
-}
-
-static ssize_t show_cpus_offlined(struct kobject *kobj,
-		struct kobj_attribute *attr, char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n", cpus_offlined);
-}
-
-static ssize_t __ref store_cpus_offlined(struct kobject *kobj,
-		struct kobj_attribute *attr, const char *buf, size_t count)
-{
-	int ret = 0;
-	uint32_t val = 0;
-	uint32_t cpu;
-
-	if (!mitigation) {
-		pr_err("Thermal Mitigations disabled.\n");
-		goto done_cc;
-	}
-	mutex_lock(&core_control_mutex);
-	ret = kstrtouint(buf, 10, &val);
-	if (ret) {
-		pr_err("Invalid input %s. err:%d\n", buf, ret);
-		goto done_cc;
-	}
-
-	if (polling_enabled) {
-		pr_err("Ignoring request; polling thread is enabled.\n");
-		goto done_cc;
-	}
-
-	for_each_possible_cpu(cpu) {
-		if (!(msm_thermal_info.core_control_mask & BIT(cpu)))
-			continue;
-		cpus[cpu].user_offline = !!(val & BIT(cpu));
-		pr_debug("\"%s\"(PID:%i) requests %s CPU%d.\n", current->comm,
-			current->pid, (cpus[cpu].user_offline) ? "offline" :
-			"online", cpu);
-	}
-
-	if (hotplug_task)
-		complete(&hotplug_notify_complete);
-	else
-		pr_err("Hotplug task is not initialized\n");
-done_cc:
-	mutex_unlock(&core_control_mutex);
-	return count;
-}
-
-static __refdata struct kobj_attribute cc_enabled_attr =
-__ATTR(enabled, 0644, show_cc_enabled, store_cc_enabled);
-
-static __refdata struct kobj_attribute cpus_offlined_attr =
-__ATTR(cpus_offlined, 0644, show_cpus_offlined, store_cpus_offlined);
-
-static __refdata struct attribute *cc_attrs[] = {
-	&cc_enabled_attr.attr,
-	&cpus_offlined_attr.attr,
-	NULL,
-};
-
-static __refdata struct attribute_group cc_attr_group = {
-	.attrs = cc_attrs,
-};
 static __init int msm_thermal_add_cc_nodes(void)
 {
 	struct kobject *module_kobj = NULL;
@@ -4864,12 +4746,6 @@ static __init int msm_thermal_add_cc_nodes(void)
 	if (!cc_kobj) {
 		pr_err("cannot create core control kobj\n");
 		ret = -ENOMEM;
-		goto done_cc_nodes;
-	}
-
-	ret = sysfs_create_group(cc_kobj, &cc_attr_group);
-	if (ret) {
-		pr_err("cannot create sysfs group. err:%d\n", ret);
 		goto done_cc_nodes;
 	}
 
